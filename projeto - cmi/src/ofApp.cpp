@@ -7,6 +7,8 @@ void ofApp::setup() {
     ofBackgroundGradient(ofColor(10), ofColor(50));
     ofEnableAntiAliasing();
     ofEnableSmoothing();
+    // Low-poly spheres so the particle system stays cheap.
+    ofSetSphereResolution(6);
 
     cube.setup(ofToDataPath("photos", true));
 }
@@ -21,6 +23,7 @@ void ofApp::update() {
     glm::quat xRot = glm::angleAxis(ofDegToRad(yspeed), glm::vec3(-1, 0, 0));
     curRot = xRot * yRot * curRot;
 
+    cube.activeFace = cube.getActiveFace(curRot);
     cube.update();
 }
 
@@ -45,7 +48,35 @@ void ofApp::draw() {
     ofDrawBitmapString("Arrows    : middle slices", 20, 40);
     ofDrawBitmapString("Q / E     : top / bottom layer", 20, 60);
     ofDrawBitmapString("Z / X     : left / right column", 20, 80);
-    ofDrawBitmapString("Photos: " + ofToString(cube.getMediaCount()) + "   FPS: " + ofToString(ofGetFrameRate(), 1), 20, 100);
+    ofDrawBitmapString("R         : reset (re-sort photos by face)", 20, 100);
+    ofDrawBitmapString("F         : toggle effects", 20, 120);
+    ofDrawBitmapString("Photos: " + ofToString(cube.getMediaCount()) +
+                       "   Particles: " + ofToString(cube.particles.activeCount()) +
+                       "   FPS: " + ofToString(ofGetFrameRate(), 1), 20, 140);
+
+    // Active face indicator — top center.
+    if (cube.sortedAssigned) {
+        FaceType active = cube.getActiveFace(curRot);
+        Perception p = cube.getFacePerception(active);
+        std::string label = cube.isScrambled
+            ? std::string("SCRAMBLED  —  press R to re-sort")
+            : std::string("ACTIVE FACE: ") + MagicCube::getPerceptionLabel(p);
+        float tw = label.length() * 8.f;
+        float bx = ofGetWidth() / 2.f - tw / 2.f - 12;
+        float by = 8;
+        ofSetColor(0, 0, 0, 180);
+        ofDrawRectangle(bx, by, tw + 24, 26);
+        if (cube.isScrambled) {
+            ofSetColor(255, 120, 90); // warm warning border
+        } else {
+            ofSetColor(120, 200, 255);
+        }
+        ofNoFill(); ofSetLineWidth(1);
+        ofDrawRectangle(bx, by, tw + 24, 26);
+        ofFill();
+        ofSetColor(cube.isScrambled ? ofColor(220, 160, 140) : ofColor(255));
+        ofDrawBitmapString(label, bx + 12, by + 17);
+    }
 
     if (cube.isLoading) {
         // Bottom-of-screen progress bar with status text.
@@ -170,6 +201,15 @@ void ofApp::keyPressed(int key) {
         case 'i': case 'I': inspectorOn = !inspectorOn; break;
         case '[': if (!cube.media.empty()) inspectorIdx--; break;
         case ']': if (!cube.media.empty()) inspectorIdx++; break;
+
+        // Reset cube to solved state (un-scrambles slice rotations + re-sorts)
+        case 'r': case 'R': cube.resetToSolved(); break;
+
+        // Toggle Phase 4 effects (particles, glow, sort path).
+        case 'f': case 'F': cube.effectsEnabled = !cube.effectsEnabled;
+                            if (!cube.effectsEnabled) cube.particles.clear();
+                            break;
+
         default: break;
     }
 }

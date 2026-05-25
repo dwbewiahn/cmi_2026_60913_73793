@@ -1,6 +1,22 @@
 #include "MagicCube.h"
 #include "FeatureExtractor.h"
 
+#include <algorithm>
+#include <numeric>
+
+namespace {
+// Each face is assigned a different perception. The user faces FRONT initially
+// and sees the Light face.
+const FacePerceptionConfig kFaceConfigs[FACE_COUNT] = {
+    { FACE_FRONT,  PERCEPTION_LIGHT,    "Light"    },
+    { FACE_BACK,   PERCEPTION_KINSHIP,  "Kinship"  },
+    { FACE_LEFT,   PERCEPTION_CONTRAST, "Contrast" },
+    { FACE_RIGHT,  PERCEPTION_HUE,      "Hue"      },
+    { FACE_TOP,    PERCEPTION_DETAIL,   "Detail"   },
+    { FACE_BOTTOM, PERCEPTION_TEXTURE,  "Texture"  },
+};
+} // namespace
+
 void MagicCube::setup(const std::string& photosDir) {
     ofLogNotice() << "MagicCube: scanning " << photosDir;
     ofDirectory dir(photosDir);
@@ -38,6 +54,7 @@ void MagicCube::setup(const std::string& photosDir) {
     loadingIndex = 0;
     isLoading = (n > 0);
     cacheDirty = false;
+    sortedAssigned = false;
     loadingStatus = "Preparing...";
 
     cubieSize = cubeSize / 3.f;
@@ -48,25 +65,13 @@ void MagicCube::buildCubies() {
     cubies.clear();
     cubies.reserve(27);
 
-    int idx = 0;
+    // Initially build with no photos. Photos get assigned in
+    // assignPhotosBySorting() once features are available.
     for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
             for (int z = -1; z <= 1; z++) {
                 Cubie c;
                 c.logicalPos = glm::ivec3(x, y, z);
-                if (!media.empty()) {
-                    auto pick = [&]() -> MediaFrame* {
-                        MediaFrame* m = &media[idx % (int)media.size()];
-                        idx++;
-                        return m;
-                    };
-                    if (z == +1) c.photos[FACE_FRONT]  = pick();
-                    if (z == -1) c.photos[FACE_BACK]   = pick();
-                    if (x == +1) c.photos[FACE_RIGHT]  = pick();
-                    if (x == -1) c.photos[FACE_LEFT]   = pick();
-                    if (y == -1) c.photos[FACE_TOP]    = pick();
-                    if (y == +1) c.photos[FACE_BOTTOM] = pick();
-                }
                 cubies.push_back(c);
             }
         }
@@ -74,24 +79,61 @@ void MagicCube::buildCubies() {
 }
 
 void MagicCube::update() {
-    if (isLoading) {
-        processOneLoadingStep();
+    float dt = ofGetLastFrameTime();
+
+    if (isLoading) processOneLoadingStep();
+
+    if (rotating) {
+        float step = rotSpeedDegPerSec * dt;
+        float remaining = rotTargetAngle - rotCurrentAngle;
+        if (std::fabs(remaining) <= step) {
+            rotCurrentAngle = rotTargetAngle;
+            commitSliceRotation();
+            rotating = false;
+            rotCurrentAngle = 0.f;
+            rotTargetAngle = 0.f;
+        } else {
+            rotCurrentAngle += (remaining > 0 ? step : -step);
+        }
     }
 
-    if (!rotating) return;
+    // ---- Phase 4 effects -----------------------------------------------------
+    particles.update(dt);  // always update so existing particles fade out
 
-    float dt = ofGetLastFrameTime();
-    float step = rotSpeedDegPerSec * dt;
-    float remaining = rotTargetAngle - rotCurrentAngle;
+    // No emission while scrambled, while loading, or during a rotation animation.
+    bool emit = effectsEnabled && sortedAssigned && !isScrambled && !rotating;
+    if (emit) {
+        if (activeFace != lastActiveFace) {
+            emitFaceBurst(activeFace, 22);
+            lastActiveFace = activeFace;
+        }
 
-    if (std::fabs(remaining) <= step) {
-        rotCurrentAngle = rotTargetAngle;
-        commitSliceRotation();
-        rotating = false;
-        rotCurrentAngle = 0.f;
-        rotTargetAngle = 0.f;
+        // Drift particles spawn at a random point along the active face's
+        // perimeter, slightly in front of the face — so they trail "around"
+        // the face rather than across the photos.
+        driftTimer += dt;
+        if (driftTimer >= 0.05f) {
+            driftTimer = 0.f;
+            int side = (int)ofRandom(4);
+            float t = ofRandom(1.f);
+            float hs = cubeSize / 2.f;
+            glm::vec3 facePos;
+            switch (side) {
+                case 0: facePos = glm::vec3(-hs + t * cubeSize, -hs, 4.f); break;
+                case 1: facePos = glm::vec3(+hs, -hs + t * cubeSize, 4.f); break;
+                case 2: facePos = glm::vec3(-hs + t * cubeSize, +hs, 4.f); break;
+                default: facePos = glm::vec3(-hs, -hs + t * cubeSize, 4.f); break;
+            }
+            glm::vec4 wp = faceLocalTransform(activeFace, cubeSize) *
+                           glm::vec4(facePos, 1.f);
+            Perception p = getFacePerception(activeFace);
+            particles.emitDrift(glm::vec3(wp), faceNormalLocal(activeFace),
+                                perceptionColor(p));
+        }
     } else {
-        rotCurrentAngle += (remaining > 0 ? step : -step);
+        // Reset the change tracker so when sorting comes back we don't burst
+        // for whatever face the camera happens to be looking at.
+        lastActiveFace = activeFace;
     }
 }
 
@@ -102,6 +144,8 @@ void MagicCube::processOneLoadingStep() {
             cacheDirty = false;
         }
         isLoading = false;
+        loadingStatus = "Sorting...";
+        assignPhotosBySorting();
         loadingStatus = "Ready";
         return;
     }
@@ -110,10 +154,8 @@ void MagicCube::processOneLoadingStep() {
     const std::string& path = pendingPaths[i];
     std::string fname = ofFilePath::getFileName(path);
 
-    // Load thumbnail (always — it's needed for rendering).
     media[i].load(path, 384);
 
-    // Features: load from cache, or compute + cache.
     if (featureStore.has(fname)) {
         media[i].features = *featureStore.get(fname);
         loadingStatus = "Cached features [" + ofToString(i + 1) + "/" +
@@ -127,7 +169,6 @@ void MagicCube::processOneLoadingStep() {
             featureStore.put(fv);
             media[i].features = fv;
             cacheDirty = true;
-            // Save incrementally so partial progress is preserved.
             featureStore.save(featuresXmlPath);
         } else {
             ofLogError() << "FeatureExtractor returned invalid for " << fname;
@@ -143,6 +184,15 @@ void MagicCube::draw() {
         bool inSlice = rotating && isInSlice(c.logicalPos, rotAxis, rotSlice);
         c.draw(cubieSize, inSlice ? sliceR : glm::mat4(1.f));
     }
+
+    bool showStaticEffects = effectsEnabled && sortedAssigned && !isScrambled;
+    if (showStaticEffects) {
+        drawActiveFaceSortPath();
+        drawActiveFaceGlow();
+    }
+    // Always draw the particles themselves so the last burst can finish fading
+    // after the cube is scrambled or effects are toggled off.
+    if (effectsEnabled) particles.draw();
 }
 
 void MagicCube::startSliceRotation(int axis, int slice, float degrees) {
@@ -154,6 +204,12 @@ void MagicCube::startSliceRotation(int axis, int slice, float degrees) {
     rotTargetAngle = degrees;
 }
 
+void MagicCube::resetToSolved() {
+    if (rotating) return;
+    buildCubies();
+    assignPhotosBySorting();
+}
+
 void MagicCube::commitSliceRotation() {
     glm::mat4 R = sliceMatrix(rotAxis, rotTargetAngle);
     for (auto& c : cubies) {
@@ -161,6 +217,10 @@ void MagicCube::commitSliceRotation() {
         c.logicalPos = rotateInt(c.logicalPos, rotAxis, rotTargetAngle);
         c.orientation = R * c.orientation;
     }
+    // A slice rotation just shuffled photos away from their feature-sorted
+    // positions. The grouping no longer matches the active face's perception,
+    // so all the effects should go silent until the user presses R.
+    isScrambled = true;
 }
 
 bool MagicCube::isInSlice(const glm::ivec3& p, int axis, int slice) const {
@@ -183,4 +243,300 @@ glm::ivec3 MagicCube::rotateInt(const glm::ivec3& p, int axis, float degrees) co
         else r = glm::ivec3(-r.y, r.x, r.z);
     }
     return r;
+}
+
+// ---- Phase 3: sort photos by perception and assign to faces -----------------
+
+void MagicCube::assignPhotosBySorting() {
+    if (media.empty()) return;
+
+    // Wipe any existing photo assignments first.
+    for (auto& c : cubies) {
+        for (int f = 0; f < FACE_COUNT; f++) c.photos[f] = nullptr;
+    }
+
+    for (const auto& cfg : kFaceConfigs) {
+        std::vector<int> sorted = sortedIndicesFor(cfg.perception);
+        int n = std::min(9, (int)sorted.size());
+        for (int cell = 0; cell < n; cell++) {
+            int col = cell % 3;
+            int row = cell / 3;
+            glm::ivec3 pos = cellToCubiePos(cfg.face, col, row);
+            Cubie* c = findCubie(pos);
+            if (c) {
+                c->photos[cfg.face] = &media[sorted[cell]];
+            }
+        }
+    }
+
+    sortedAssigned = true;
+    isScrambled = false;
+    lastActiveFace = activeFace; // suppress a spurious face-change burst
+
+    // Grouping happened — burst particles on every face to signal it.
+    if (effectsEnabled) {
+        for (const auto& cfg : kFaceConfigs) emitFaceBurst(cfg.face, 16);
+    }
+}
+
+std::vector<int> MagicCube::sortedIndicesFor(Perception p) const {
+    std::vector<int> idx(media.size());
+    std::iota(idx.begin(), idx.end(), 0);
+
+    if (p == PERCEPTION_KINSHIP) {
+        // Pick the photo with the smallest average ORB distance to all others
+        // (the most "central" photo) as anchor, then sort the rest by distance
+        // to it. Anchor goes in cell 0; closest neighbors fill the rest.
+        if (idx.empty()) return idx;
+        int anchor = 0;
+        float bestAvg = std::numeric_limits<float>::infinity();
+        for (int i = 0; i < (int)media.size(); i++) {
+            float sum = 0.f; int cnt = 0;
+            for (int j = 0; j < (int)media.size(); j++) {
+                if (i == j) continue;
+                sum += orbDistance(media[i].features, media[j].features);
+                cnt++;
+            }
+            float avg = cnt > 0 ? sum / cnt : 0.f;
+            if (avg < bestAvg) { bestAvg = avg; anchor = i; }
+        }
+        std::sort(idx.begin(), idx.end(), [&](int a, int b) {
+            // Irreflexivity: comp(x, x) must be false.
+            if (a == b) return false;
+            if (a == anchor) return true;
+            if (b == anchor) return false;
+            return orbDistance(media[anchor].features, media[a].features) <
+                   orbDistance(media[anchor].features, media[b].features);
+        });
+        return idx;
+    }
+
+    auto key = [&](int i) -> float {
+        const FeatureVector& f = media[i].features;
+        switch (p) {
+            case PERCEPTION_LIGHT:    return f.meanLum;
+            case PERCEPTION_CONTRAST: return f.varLum;
+            case PERCEPTION_HUE:      return f.varHue;
+            case PERCEPTION_DETAIL:   return f.edgeDensity;
+            case PERCEPTION_TEXTURE:  return f.textureVar;
+            default: return 0.f;
+        }
+    };
+    std::sort(idx.begin(), idx.end(), [&](int a, int b) { return key(a) < key(b); });
+    return idx;
+}
+
+// Map (face, col, row) → world-space cubie logical position.
+// Derived from each face's transform (see Cubie.h::faceLocalTransform).
+// col / row are 0..2, where row 0 is the visual top of the face when looking
+// at it from outside the cube.
+glm::ivec3 MagicCube::cellToCubiePos(FaceType f, int col, int row) {
+    switch (f) {
+        case FACE_FRONT:  return glm::ivec3(col - 1, row - 1, +1);
+        case FACE_BACK:   return glm::ivec3(1 - col, row - 1, -1);
+        case FACE_RIGHT:  return glm::ivec3(+1, row - 1, 1 - col);
+        case FACE_LEFT:   return glm::ivec3(-1, row - 1, col - 1);
+        case FACE_TOP:    return glm::ivec3(col - 1, -1, row - 1);
+        case FACE_BOTTOM: return glm::ivec3(col - 1, +1, 1 - row);
+        default:          return glm::ivec3(0, 0, 0);
+    }
+}
+
+Cubie* MagicCube::findCubie(const glm::ivec3& pos) {
+    for (auto& c : cubies) if (c.logicalPos == pos) return &c;
+    return nullptr;
+}
+
+// Hamming-based average min distance between two ORB descriptor sets.
+// Result is in [0, 256] (lower = more similar).
+float MagicCube::orbDistance(const FeatureVector& a, const FeatureVector& b) const {
+    if (a.orbDescriptors.empty() || b.orbDescriptors.empty()) return 256.f;
+    const int dsize = 32;
+    int nA = a.orbNumKeypoints;
+    int nB = b.orbNumKeypoints;
+    if (nA <= 0 || nB <= 0) return 256.f;
+
+    float total = 0.f;
+    for (int i = 0; i < nA; i++) {
+        const uint8_t* da = &a.orbDescriptors[i * dsize];
+        int bestDist = 257;
+        for (int j = 0; j < nB; j++) {
+            const uint8_t* db = &b.orbDescriptors[j * dsize];
+            int dist = 0;
+            for (int k = 0; k < dsize; k++) {
+                dist += __builtin_popcount((unsigned)(da[k] ^ db[k]));
+            }
+            if (dist < bestDist) bestDist = dist;
+        }
+        total += bestDist;
+    }
+    return total / nA;
+}
+
+FaceType MagicCube::getActiveFace(const glm::quat& cubeRotation) const {
+    // Each face's outward normal in cube-local coords (Y is down in OF default).
+    static const glm::vec3 baseNormals[FACE_COUNT] = {
+        glm::vec3(0,  0, +1), // FRONT
+        glm::vec3(0,  0, -1), // BACK
+        glm::vec3(-1, 0,  0), // LEFT
+        glm::vec3(+1, 0,  0), // RIGHT
+        glm::vec3(0, -1,  0), // TOP
+        glm::vec3(0, +1,  0), // BOTTOM
+    };
+    // After ofMultMatrix(curRot) is applied, the camera looks at faces whose
+    // (rotated) normals point most strongly toward +Z (out of the screen).
+    const glm::vec3 viewerDir(0, 0, +1);
+    int best = 0;
+    float bestDot = -2.f;
+    for (int i = 0; i < FACE_COUNT; i++) {
+        glm::vec3 n = cubeRotation * baseNormals[i];
+        float d = glm::dot(n, viewerDir);
+        if (d > bestDot) { bestDot = d; best = i; }
+    }
+    return (FaceType)best;
+}
+
+const char* MagicCube::getPerceptionLabel(Perception p) {
+    switch (p) {
+        case PERCEPTION_LIGHT:    return "Light (mean luminance)";
+        case PERCEPTION_CONTRAST: return "Contrast (luminance variance)";
+        case PERCEPTION_HUE:      return "Hue (color variance)";
+        case PERCEPTION_DETAIL:   return "Detail (edge density)";
+        case PERCEPTION_TEXTURE:  return "Texture (local roughness)";
+        case PERCEPTION_KINSHIP:  return "Kinship (ORB similarity)";
+        default:                  return "?";
+    }
+}
+
+Perception MagicCube::getFacePerception(FaceType f) const {
+    for (const auto& cfg : kFaceConfigs) {
+        if (cfg.face == f) return cfg.perception;
+    }
+    return PERCEPTION_LIGHT;
+}
+
+glm::vec3 MagicCube::faceNormalLocal(FaceType f) {
+    switch (f) {
+        case FACE_FRONT:  return glm::vec3(0,  0, +1);
+        case FACE_BACK:   return glm::vec3(0,  0, -1);
+        case FACE_RIGHT:  return glm::vec3(+1, 0,  0);
+        case FACE_LEFT:   return glm::vec3(-1, 0,  0);
+        case FACE_TOP:    return glm::vec3(0, -1,  0);
+        case FACE_BOTTOM: return glm::vec3(0, +1,  0);
+        default:          return glm::vec3(0, 0, 1);
+    }
+}
+
+ofFloatColor MagicCube::perceptionColor(Perception p) {
+    switch (p) {
+        case PERCEPTION_LIGHT:    return ofFloatColor(1.00f, 0.85f, 0.40f);
+        case PERCEPTION_CONTRAST: return ofFloatColor(0.95f, 0.95f, 1.00f);
+        case PERCEPTION_HUE:      return ofFloatColor(0.85f, 0.35f, 1.00f);
+        case PERCEPTION_DETAIL:   return ofFloatColor(0.45f, 1.00f, 0.65f);
+        case PERCEPTION_TEXTURE:  return ofFloatColor(0.95f, 0.70f, 0.45f);
+        case PERCEPTION_KINSHIP:  return ofFloatColor(0.40f, 0.90f, 1.00f);
+        default:                  return ofFloatColor(1, 1, 1);
+    }
+}
+
+// World-space center of one cell on a face — used to spawn particles at the
+// right position. Uses the face's transform, evaluated on the face-local
+// 2D grid position of the cell.
+glm::vec3 MagicCube::faceCellWorldCenter(FaceType f, int col, int row) const {
+    float step = cubeSize / 3.f;
+    float fx = -cubeSize / 2.f + col * step + step / 2.f;
+    float fy = -cubeSize / 2.f + row * step + step / 2.f;
+    glm::vec4 local(fx, fy, 0.f, 1.f);
+    glm::mat4 m = faceLocalTransform(f, cubeSize);
+    glm::vec4 w = m * local;
+    return glm::vec3(w);
+}
+
+void MagicCube::emitFaceBurst(FaceType f, int particlesPerCell) {
+    Perception p = getFacePerception(f);
+    ofFloatColor color = perceptionColor(p);
+    glm::vec3 outward = faceNormalLocal(f);
+    // Spawn slightly OUTSIDE the face so particles never cover the photos —
+    // they explode outward from there.
+    float outOffset = cubeSize * 0.12f;
+    for (int cell = 0; cell < 9; cell++) {
+        int col = cell % 3;
+        int row = cell / 3;
+        glm::vec3 wp = faceCellWorldCenter(f, col, row) + outward * outOffset;
+        particles.emitDirected(wp, outward, particlesPerCell, color,
+                               160.f, 0.35f, 1.1f, 7.0f);
+    }
+}
+
+void MagicCube::drawActiveFaceGlow() {
+    Perception p = getFacePerception(activeFace);
+    ofFloatColor c = perceptionColor(p);
+    float pulse = 0.5f + 0.5f * std::sin(ofGetElapsedTimef() * 2.4f);
+
+    ofPushStyle();
+    ofPushMatrix();
+    ofMultMatrix(faceLocalTransform(activeFace, cubeSize));
+
+    // Thick pulsing outline just in front of the photo layer.
+    float z = 2.f;
+    float s = cubeSize / 2.f;
+    ofSetLineWidth(5.f);
+    ofNoFill();
+    ofSetColor(c.r * 255, c.g * 255, c.b * 255, (int)(120 + 90 * pulse));
+    ofPushMatrix();
+    ofTranslate(0, 0, z);
+    ofDrawRectangle(-s, -s, s * 2, s * 2);
+    ofPopMatrix();
+
+    // Soft inner halo — a slightly smaller, fainter rect.
+    ofSetLineWidth(2.f);
+    ofSetColor(c.r * 255, c.g * 255, c.b * 255, (int)(60 + 40 * pulse));
+    ofPushMatrix();
+    ofTranslate(0, 0, z + 0.5f);
+    ofDrawRectangle(-s * 0.96f, -s * 0.96f, s * 1.92f, s * 1.92f);
+    ofPopMatrix();
+
+    ofFill();
+    ofPopMatrix();
+    ofPopStyle();
+}
+
+void MagicCube::drawActiveFaceSortPath() {
+    Perception p = getFacePerception(activeFace);
+    ofFloatColor c = perceptionColor(p);
+    float step = cubeSize / 3.f;
+    float baseAlpha = 70.f;
+    float pulseAlpha = 35.f * (0.5f + 0.5f * std::sin(ofGetElapsedTimef() * 1.8f));
+
+    ofPushStyle();
+    ofPushMatrix();
+    ofMultMatrix(faceLocalTransform(activeFace, cubeSize));
+
+    // Draw faint line connecting cells 0..8 (sort order: top-left to bottom-right).
+    ofSetLineWidth(2.f);
+    ofSetColor(c.r * 255, c.g * 255, c.b * 255, (int)(baseAlpha + pulseAlpha));
+
+    glm::vec3 prev(0);
+    for (int cell = 0; cell < 9; cell++) {
+        int col = cell % 3;
+        int row = cell / 3;
+        float fx = -cubeSize / 2.f + col * step + step / 2.f;
+        float fy = -cubeSize / 2.f + row * step + step / 2.f;
+        glm::vec3 cur(fx, fy, 1.5f);
+        if (cell > 0) ofDrawLine(prev, cur);
+        prev = cur;
+    }
+
+    // Small dots at each cell center to mark the sort sequence.
+    ofSetColor(c.r * 255, c.g * 255, c.b * 255, (int)(140 + pulseAlpha));
+    for (int cell = 0; cell < 9; cell++) {
+        int col = cell % 3;
+        int row = cell / 3;
+        float fx = -cubeSize / 2.f + col * step + step / 2.f;
+        float fy = -cubeSize / 2.f + row * step + step / 2.f;
+        ofDrawSphere(fx, fy, 1.5f, 3.f);
+    }
+
+    ofPopMatrix();
+    ofPopStyle();
 }
