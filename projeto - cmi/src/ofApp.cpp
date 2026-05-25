@@ -46,6 +46,103 @@ void ofApp::draw() {
     ofDrawBitmapString("Q / E     : top / bottom layer", 20, 60);
     ofDrawBitmapString("Z / X     : left / right column", 20, 80);
     ofDrawBitmapString("Photos: " + ofToString(cube.getMediaCount()) + "   FPS: " + ofToString(ofGetFrameRate(), 1), 20, 100);
+
+    if (cube.isLoading) {
+        // Bottom-of-screen progress bar with status text.
+        float barW = ofGetWidth() - 80;
+        float barH = 18;
+        float barX = 40;
+        float barY = ofGetHeight() - 60;
+        float p = cube.getLoadingProgress();
+
+        ofSetColor(0, 0, 0, 180);
+        ofDrawRectangle(0, barY - 36, ofGetWidth(), 96);
+
+        ofSetColor(60);
+        ofNoFill(); ofSetLineWidth(1);
+        ofDrawRectangle(barX, barY, barW, barH);
+        ofFill();
+        ofSetColor(120, 200, 255);
+        ofDrawRectangle(barX, barY, barW * p, barH);
+
+        ofSetColor(230);
+        ofDrawBitmapString(cube.loadingStatus, barX, barY - 8);
+        ofDrawBitmapString(ofToString(int(p * 100)) + "%", barX + barW + 10, barY + 13);
+    } else {
+        ofSetColor(180);
+        ofDrawBitmapString("I: feature inspector   [ / ]: prev/next photo", 20, ofGetHeight() - 20);
+    }
+
+    if (inspectorOn) drawInspector();
+}
+
+void ofApp::drawInspector() {
+    if (cube.media.empty()) return;
+    inspectorIdx = ((inspectorIdx % (int)cube.media.size()) + (int)cube.media.size()) % (int)cube.media.size();
+    const MediaFrame& m = cube.media[inspectorIdx];
+    const FeatureVector& f = m.features;
+
+    float panelW = 360;
+    float panelH = 320;
+    float panelX = ofGetWidth() - panelW - 20;
+    float panelY = 20;
+
+    ofSetColor(0, 0, 0, 220);
+    ofDrawRectangle(panelX, panelY, panelW, panelH);
+    ofSetColor(120, 200, 255);
+    ofNoFill(); ofSetLineWidth(1);
+    ofDrawRectangle(panelX, panelY, panelW, panelH);
+    ofFill();
+
+    // Thumbnail
+    if (m.loaded && m.thumbnail.isAllocated()) {
+        float thumbMax = 140.f;
+        float iw = m.thumbnail.getWidth();
+        float ih = m.thumbnail.getHeight();
+        float s = thumbMax / std::max(iw, ih);
+        ofSetColor(255);
+        m.thumbnail.draw(panelX + 12, panelY + 36, iw * s, ih * s);
+    }
+
+    ofSetColor(230);
+    ofDrawBitmapString("Feature Inspector  [" + ofToString(inspectorIdx + 1) +
+                       "/" + ofToString((int)cube.media.size()) + "]",
+                       panelX + 12, panelY + 22);
+
+    auto bar = [&](float x, float y, float w, float h, float v01, const std::string& label, float raw = -1.f) {
+        ofSetColor(50);
+        ofDrawRectangle(x, y, w, h);
+        ofSetColor(120, 200, 255);
+        ofDrawRectangle(x, y, w * ofClamp(v01, 0.f, 1.f), h);
+        ofSetColor(230);
+        std::string txt = label + ": " + ofToString(raw >= 0 ? raw : v01, 4);
+        ofDrawBitmapString(txt, x, y - 4);
+    };
+
+    float tx = panelX + 165;
+    float ty = panelY + 50;
+    float tw = panelW - (tx - panelX) - 20;
+
+    ofSetColor(230);
+    ofDrawBitmapString(f.filename, panelX + 12, panelY + panelH - 90);
+
+    if (!f.valid) {
+        ofSetColor(255, 120, 120);
+        ofDrawBitmapString("(features not loaded yet)", tx, ty);
+    } else {
+        bar(tx, ty +  10, tw, 10, f.meanLum,                 "mean luminance");
+        bar(tx, ty +  40, tw, 10, f.varLum * 4.f,            "luminance var", f.varLum);
+        bar(tx, ty +  70, tw, 10, f.varHue * 4.f,            "hue variance",  f.varHue);
+        bar(tx, ty + 100, tw, 10, f.edgeDensity * 5.f,       "edge density",  f.edgeDensity);
+        bar(tx, ty + 130, tw, 10, f.textureVar * 4.f,        "texture (RMS)", f.textureVar);
+
+        ofSetColor(230);
+        ofDrawBitmapString("ORB keypoints: " + ofToString(f.orbNumKeypoints) +
+                           "   desc bytes: " + ofToString((int)f.orbDescriptors.size()),
+                           panelX + 12, panelY + panelH - 60);
+        ofDrawBitmapString("XML: bin/data/features.xml", panelX + 12, panelY + panelH - 40);
+        ofDrawBitmapString("[ / ] cycle    I toggle", panelX + 12, panelY + panelH - 20);
+    }
 }
 
 //--------------------------------------------------------------
@@ -68,6 +165,11 @@ void ofApp::keyPressed(int key) {
         // Outer vertical columns (X axis: -1 = left, +1 = right).
         case 'z': case 'Z': cube.startSliceRotation(0, -1, +90.f); break;
         case 'x': case 'X': cube.startSliceRotation(0, +1, +90.f); break;
+
+        // Feature inspector
+        case 'i': case 'I': inspectorOn = !inspectorOn; break;
+        case '[': if (!cube.media.empty()) inspectorIdx--; break;
+        case ']': if (!cube.media.empty()) inspectorIdx++; break;
         default: break;
     }
 }

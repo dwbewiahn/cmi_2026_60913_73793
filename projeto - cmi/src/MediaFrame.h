@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ofMain.h"
+#include "FeatureVector.h"
 
 class MediaFrame {
 public:
@@ -8,6 +9,7 @@ public:
     std::string filepath;
     ofImage thumbnail;
     bool loaded = false;
+    FeatureVector features;
 
     void load(const std::string& path, int maxDim = 512) {
         filepath = path;

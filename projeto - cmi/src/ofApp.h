@@ -28,4 +28,9 @@ public:
     float dampen = 0.4f;
     float xspeed = 0.f;
     float yspeed = 0.f;
+
+    bool inspectorOn = false;
+    int inspectorIdx = 0;
+
+    void drawInspector();
 };

@@ -33,6 +33,12 @@ MARKETING_VERSION = 0.1.0
 // If users upgrade project to recommended settings it enables script sandboxing which breaks our post build script
 ENABLE_USER_SCRIPT_SANDBOXING=NO
 
+// Xcode 26 enables the app sandbox by default for adhoc-signed dev builds,
+// which blocks the app from reading bin/data/ (the photo set and feature cache).
+// We disable it explicitly so the app has normal filesystem access.
+ENABLE_APP_SANDBOX = NO
+CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO
+
 // this is "Build" in the Xcode target Identity UI, an incremental build number
 // important for the App Store as new build submissions need a diff number even
 // if MARKETING_VERSION is the same
@@ -74,9 +80,15 @@ USER_PREPROCESSOR_DEFINITIONS="OF_NO_FMOD=1"
 LIB_FMOD=""
 GCC_PREPROCESSOR_DEFINITIONS=$(inherited) $(USER_PREPROCESSOR_DEFINITIONS)
 
+// OpenCV (from the ofxOpenCv addon's xcframework) — wired in directly without
+// pulling in the full ofxOpenCv source tree. We use cv:: APIs in our own code.
+OPENCV_XCFRAMEWORK = $(OF_PATH)/addons/ofxOpenCv/libs/opencv/lib/macos/opencv.xcframework/macos-arm64_x86_64
+OPENCV_HEADERS = $(OPENCV_XCFRAMEWORK)/Headers
+OPENCV_LIB = $(OPENCV_XCFRAMEWORK)/opencv.a
+
 OTHER_CFLAGS = $(OF_CORE_CFLAGS)
-OTHER_LDFLAGS = $(OF_CORE_LIBS) $(OF_CORE_FRAMEWORKS)
-HEADER_SEARCH_PATHS = $(OF_CORE_HEADERS)
+OTHER_LDFLAGS = $(OF_CORE_LIBS) $(OF_CORE_FRAMEWORKS) $(OPENCV_LIB) -framework Accelerate
+HEADER_SEARCH_PATHS = $(OF_CORE_HEADERS) $(OPENCV_HEADERS)
 
 //THIS MAKES SURE THE APP BUILDS INSIDE THE BIN FOLDER
 //If you comment this line out the app will be run from DerrivedData and your data/ files won't be accessible unless you uncomment OF_BUNDLE_DATA_FOLDER = 1 above
