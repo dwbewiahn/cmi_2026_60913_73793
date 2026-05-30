@@ -2,6 +2,7 @@
 
 #include "ofMain.h"
 #include "MagicCube.h"
+#include <opencv2/opencv.hpp>
 
 class ofApp : public ofBaseApp {
 public:
@@ -32,5 +33,19 @@ public:
     bool inspectorOn = false;
     int inspectorIdx = 0;
 
+    float cameraZoom = 1.0f; // Controla a escala do cubo
+    ofVideoGrabber grabber;   // Objeto responsável por gerir a webcam
+
+    //  Rastreio Facial
+    cv::CascadeClassifier faceCascade;
+    bool faceCascadeLoaded = false;
+
+    // Variáveis para desenhar a caixa de rastreio no ecrã
+    cv::Rect trackedFaceRect;
+    bool faceDetectedNow = false;
+    bool faceTrackingOn = true;
+
     void drawInspector();
+    void mouseScrolled(ofMouseEventArgs& mouse); // Captura o scroll do rato
 };
+

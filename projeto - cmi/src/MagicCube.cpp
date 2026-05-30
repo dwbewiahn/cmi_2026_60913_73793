@@ -1,8 +1,9 @@
 #include "MagicCube.h"
 #include "FeatureExtractor.h"
-
+#include <intrin.h>
+#pragma intrinsic(__popcnt)
 #include <algorithm>
-#include <numeric>
+#include <numeric>7
 
 namespace {
 // Each face is assigned a different perception. The user faces FRONT initially
@@ -364,7 +365,11 @@ float MagicCube::orbDistance(const FeatureVector& a, const FeatureVector& b) con
             const uint8_t* db = &b.orbDescriptors[j * dsize];
             int dist = 0;
             for (int k = 0; k < dsize; k++) {
-                dist += __builtin_popcount((unsigned)(da[k] ^ db[k]));
+                #ifdef _MSC_VER
+                    dist += __popcnt((unsigned)(da[k] ^ db[k]));
+                #else
+                    dist += __builtin_popcount((unsigned)(da[k] ^ db[k]));
+                #endif  
             }
             if (dist < bestDist) bestDist = dist;
         }
