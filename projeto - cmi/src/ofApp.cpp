@@ -12,22 +12,26 @@ void ofApp::setup() {
     ofSetSphereResolution(6);
 
     cube.setup(ofToDataPath("photos", true));
-    
-    // Inicializa a webcam com 320x240 píxeis de resolução
-    grabber.setup(320, 240);
 
-    // Tenta carregar o ficheiro de inteligência de rostos
-    faceCascadeLoaded = faceCascade.load(ofToDataPath("haarcascade_frontalface_default.xml", true));
+    // Carrega os vídeos (e extrai motion energy + rhythm; fica em cache no XML).
+    cube.loadVideos(ofToDataPath("videos", true));
 
+    // --- DETEÇÃO DE CARA TEMPORARIAMENTE DESATIVADA ---------------------------
+    // // Inicializa a webcam com 320x240 píxeis de resolução
+    // grabber.setup(320, 240);
+    // // Tenta carregar o ficheiro de inteligência de rostos
+    // faceCascadeLoaded = faceCascade.load(ofToDataPath("haarcascade_frontalface_default.xml", true));
+    // --------------------------------------------------------------------------
 }
 
 //--------------------------------------------------------------
 void ofApp::update() {
 
-    // SE HOUVER UMA FOTO EXPANDIDA, CONGELA O CUBO E O RASTREIO FACIAL
+    // SE HOUVER UMA FOTO EXPANDIDA, CONGELA O CUBO
     if (selectedPhoto != nullptr) return;
 
-    grabber.update();
+    // --- DETEÇÃO DE CARA TEMPORARIAMENTE DESATIVADA ---
+    // grabber.update();
 
     static glm::quat targetRot = curRot;
     static bool isAnimating = false;
@@ -54,6 +58,7 @@ void ofApp::update() {
 
     faceDetectedNow = false;
 
+    /* --- DETEÇÃO DE CARA TEMPORARIAMENTE DESATIVADA ---------------------------
     //  Só processa a câmara se o controlo por face estiver ligado (faceTrackingOn == true)
     if (faceTrackingOn && faceCascadeLoaded && grabber.isFrameNew()) {
         ofPixels& px = grabber.getPixels();
@@ -122,6 +127,7 @@ void ofApp::update() {
             }
         }
     }
+    --------------------------------------------------------------------------- */
 
     if (isAnimating) {
         curRot = glm::slerp(curRot, targetRot, 0.18f);
@@ -146,7 +152,10 @@ void ofApp::update() {
 
 //--------------------------------------------------------------
 void ofApp::draw() {
-    ofBackgroundGradient(ofColor(10), ofColor(50));
+    // Inside the cube: a flat background the colour of the cube, so the videos
+    // feel like they're floating inside it (not sitting on one of its faces).
+    if (cube.insideMode) ofBackground(24, 24, 28);
+    else                 ofBackgroundGradient(ofColor(10), ofColor(50));
 
     glm::vec3 center(ofGetWidth()/2.f, ofGetHeight()/2.f, 0.f);
 
@@ -173,13 +182,15 @@ void ofApp::draw() {
     ofDrawBitmapString("R         : reset (re-sort photos by face)", 20, 100);
     ofDrawBitmapString("F         : toggle effects", 20, 120);
     ofDrawBitmapString("Scroll    : zoom cube", 20, 140);
-    string statusFace = faceTrackingOn ? "ON" : "OFF";
-    ofDrawBitmapString("T         : toggle face tracking [" + statusFace + "]", 20, 160);
+    string statusInside = cube.insideMode ? "ON" : "OFF";
+    ofDrawBitmapString("V         : enter / exit cube (videos) [" + statusInside + "]", 20, 160);
+    ofDrawBitmapString("D         : next video (when inside)", 20, 175);
 
-  
+
     ofDrawBitmapString("Photos: " + ofToString(cube.getMediaCount()) +
+        "   Videos: " + ofToString(cube.getVideoCount()) +
         "   Particles: " + ofToString(cube.particles.activeCount()) +
-        "   FPS: " + ofToString(ofGetFrameRate(), 1), 20, 180);
+        "   FPS: " + ofToString(ofGetFrameRate(), 1), 20, 195);
 
     ofPopMatrix();
 
@@ -187,15 +198,16 @@ void ofApp::draw() {
     if (cube.sortedAssigned) {
         FaceType active = cube.getActiveFace(curRot);
         Perception p = cube.getFacePerception(active);
-        std::string label = cube.isScrambled
-            ? std::string("SCRAMBLED  —  press R to re-sort")
-            : std::string("ACTIVE FACE: ") + MagicCube::getPerceptionLabel(p);
+        bool sorted = cube.isFaceSorted(active);
+        std::string label = sorted
+            ? std::string("ACTIVE FACE: ") + MagicCube::getPerceptionLabel(p)
+            : std::string("SCRAMBLED face  —  rotate it back or press R");
         float tw = label.length() * 8.f;
         float bx = ofGetWidth() / 2.f - tw / 2.f - 12;
         float by = 8;
         ofSetColor(0, 0, 0, 180);
         ofDrawRectangle(bx, by, tw + 24, 26);
-        if (cube.isScrambled) {
+        if (!sorted) {
             ofSetColor(255, 120, 90); // warm warning border
         } else {
             ofSetColor(120, 200, 255);
@@ -203,7 +215,7 @@ void ofApp::draw() {
         ofNoFill(); ofSetLineWidth(1);
         ofDrawRectangle(bx, by, tw + 24, 26);
         ofFill();
-        ofSetColor(cube.isScrambled ? ofColor(220, 160, 140) : ofColor(255));
+        ofSetColor(!sorted ? ofColor(220, 160, 140) : ofColor(255));
         ofDrawBitmapString(label, bx + 12, by + 17);
     }
 
@@ -235,26 +247,47 @@ void ofApp::draw() {
 
     if (inspectorOn) drawInspector();
 
-    // Desenha a câmara no canto inferior direito (largura 160, altura 120)
-    ofSetColor(255);
-    grabber.draw(ofGetWidth() - 180, ofGetHeight() - 140, 160, 120);
-
-    // Desenha a caixa verde de diagnóstico se o OpenCV estiver a detetar um rosto válido
-    if (faceDetectedNow) {
-        ofPushStyle();
-        ofNoFill();
-        ofSetColor(0, 255, 0); // Cor verde ativa
-        ofSetLineWidth(2.f);
-
-        // Converte as coordenadas do frame da câmara para a posição correspondente no ecrã
-        float renderX = (ofGetWidth() - 180) + (trackedFaceRect.x * 0.5f);
-        float renderY = (ofGetHeight() - 140) + (trackedFaceRect.y * 0.5f);
-        float renderW = trackedFaceRect.width * 0.5f;
-        float renderH = trackedFaceRect.height * 0.5f;
-
-        ofDrawRectangle(renderX, renderY, renderW, renderH);
-        ofPopStyle();
+    // Overlay do modo imersivo: os 3 vídeos (mais -> menos energético).
+    // Posicionado em baixo à esquerda, mesmo por cima da linha "I: feature".
+    if (cube.insideMode && !cube.videoOrder.empty()) {
+        int nv = (int)cube.videoOrder.size();
+        int c  = cube.videoCenter % nv;
+        float bx = 20;
+        float boxW = 540;
+        float boxH = 30 + 18 * nv;
+        float boxTop = ofGetHeight() - 34 - boxH; // base mesmo acima de "I: feature"
+        ofSetColor(0, 0, 0, 180);
+        ofDrawRectangle(bx - 10, boxTop, boxW, boxH);
+        ofSetColor(120, 200, 255);
+        ofDrawBitmapString("INSIDE THE CUBE  -  3 videos most -> least energetic   (D: next)", bx, boxTop + 16);
+        ofSetColor(235);
+        for (int k = 0; k < nv; k++) {
+            int vi = cube.videoOrder[k];
+            const FeatureVector& f = cube.videos[vi].features;
+            std::string mark = (k == c) ? "  <-- CENTER (active)" : "";
+            std::string line = ofToString(k + 1) + ". " + cube.videos[vi].filename +
+                "   motion=" + ofToString(f.motionEnergy, 3) +
+                "   rhythm=" + ofToString(f.videoRhythm, 3) + mark;
+            ofDrawBitmapString(line, bx, boxTop + 34 + k * 18);
+        }
     }
+
+    // --- CÂMARA / CAIXA DE DETEÇÃO TEMPORARIAMENTE DESATIVADAS ---------------
+    // ofSetColor(255);
+    // grabber.draw(ofGetWidth() - 180, ofGetHeight() - 140, 160, 120);
+    // if (faceDetectedNow) {
+    //     ofPushStyle();
+    //     ofNoFill();
+    //     ofSetColor(0, 255, 0);
+    //     ofSetLineWidth(2.f);
+    //     float renderX = (ofGetWidth() - 180) + (trackedFaceRect.x * 0.5f);
+    //     float renderY = (ofGetHeight() - 140) + (trackedFaceRect.y * 0.5f);
+    //     float renderW = trackedFaceRect.width * 0.5f;
+    //     float renderH = trackedFaceRect.height * 0.5f;
+    //     ofDrawRectangle(renderX, renderY, renderW, renderH);
+    //     ofPopStyle();
+    // }
+    // ------------------------------------------------------------------------
 
     // --- DESENHO DA FOTO EXPANDIDA EM ECRÃ INTEIRO ---
     if (selectedPhoto != nullptr && selectedPhoto->loaded && selectedPhoto->thumbnail.isAllocated()) {
@@ -400,8 +433,19 @@ void ofApp::keyPressed(int key) {
         if (!cube.effectsEnabled) cube.particles.clear();
         break;
 
-        // CASO ADICIONADO: Inverte o estado do rastreio facial com a tecla T
-    case 't': case 'T': faceTrackingOn = !faceTrackingOn; break;
+        // DETEÇÃO DE CARA TEMPORARIAMENTE DESATIVADA
+    // case 't': case 'T': faceTrackingOn = !faceTrackingOn; break;
+
+        // Entrar / sair do cubo (experiência imersiva com os vídeos).
+    case 'v': case 'V':
+        cube.setInsideMode(!cube.insideMode);
+        cameraZoom = cube.insideMode ? 1.5f : 1.0f; // aproxima a câmara para parecer que estamos dentro
+        break;
+
+        // Dentro do cubo: passar para o vídeo seguinte (carrossel).
+    case 'd': case 'D':
+        cube.cycleVideo();
+        break;
 
     default: break;
     }

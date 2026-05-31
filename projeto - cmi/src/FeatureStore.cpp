@@ -35,6 +35,10 @@ bool FeatureStore::load(const std::string& xmlPath) {
         fv.textureVar     = p.getChild("texture_var").getFloatValue();
         fv.orbNumKeypoints = p.getChild("orb_num").getIntValue();
         fv.orbDescriptors = fromHex(p.getChild("orb_desc").getValue());
+        // Video features (absent in older caches -> default to 0 / false).
+        if (p.getChild("is_video"))     fv.isVideo      = (p.getChild("is_video").getIntValue() != 0);
+        if (p.getChild("motion_energy")) fv.motionEnergy = p.getChild("motion_energy").getFloatValue();
+        if (p.getChild("video_rhythm"))  fv.videoRhythm  = p.getChild("video_rhythm").getFloatValue();
         fv.valid = !fv.filename.empty();
         if (fv.valid) features[fv.filename] = fv;
     }
@@ -58,6 +62,9 @@ bool FeatureStore::save(const std::string& xmlPath) const {
         p.appendChild("texture_var").set(fv.textureVar);
         p.appendChild("orb_num").set(fv.orbNumKeypoints);
         p.appendChild("orb_desc").set(toHex(fv.orbDescriptors));
+        p.appendChild("is_video").set(fv.isVideo ? 1 : 0);
+        p.appendChild("motion_energy").set(fv.motionEnergy);
+        p.appendChild("video_rhythm").set(fv.videoRhythm);
     }
     bool ok = xml.save(xmlPath);
     if (ok) ofLogNotice() << "FeatureStore: saved " << features.size()

@@ -1,9 +1,12 @@
 #include "MagicCube.h"
 #include "FeatureExtractor.h"
+#ifdef _MSC_VER
 #include <intrin.h>
 #pragma intrinsic(__popcnt)
+#endif
 #include <algorithm>
 #include <numeric>
+#include <cmath>
 
 namespace {
 // Each face is assigned a different perception. The user faces FRONT initially
@@ -62,6 +65,43 @@ void MagicCube::setup(const std::string& photosDir) {
     buildCubies();
 }
 
+void MagicCube::loadVideos(const std::string& videosDir) {
+    ofLogNotice() << "MagicCube: scanning videos " << videosDir;
+    ofDirectory dir(videosDir);
+    dir.allowExt("mp4"); dir.allowExt("MP4");
+    dir.allowExt("mov"); dir.allowExt("MOV");
+    dir.allowExt("m4v"); dir.allowExt("M4V");
+
+    int n = 0;
+    try { dir.listDir(); dir.sort(); n = dir.size(); }
+    catch (const std::exception& e) { ofLogError() << "videos dir: " << e.what(); n = 0; }
+    ofLogNotice() << "Found " << n << " videos in " << videosDir;
+
+    videos.clear();
+    videos.resize(n); // resized once -> elements stay put (ofVideoPlayer is stable)
+
+    bool dirty = false;
+    for (int i = 0; i < n; i++) {
+        std::string path  = dir.getPath(i);
+        std::string fname = ofFilePath::getFileName(path);
+
+        videos[i].loadVideo(path); // for playback
+
+        const FeatureVector* cached = featureStore.get(fname);
+        if (cached && cached->isVideo && cached->valid) {
+            videos[i].features = *cached; // reuse cached motion/rhythm
+        } else {
+            FeatureVector fv = FeatureExtractor::computeFromVideoPath(path);
+            if (fv.valid) {
+                featureStore.put(fv);
+                videos[i].features = fv;
+                dirty = true;
+            }
+        }
+    }
+    if (dirty) featureStore.save(featuresXmlPath);
+}
+
 void MagicCube::buildCubies() {
     cubies.clear();
     cubies.reserve(27);
@@ -73,6 +113,7 @@ void MagicCube::buildCubies() {
             for (int z = -1; z <= 1; z++) {
                 Cubie c;
                 c.logicalPos = glm::ivec3(x, y, z);
+                c.homePos    = glm::ivec3(x, y, z);
                 cubies.push_back(c);
             }
         }
@@ -101,13 +142,18 @@ void MagicCube::update() {
     // ---------------------------------------------------------
     particles.update(dt);  // always update so existing particles fade out
 
-    // No emission while scrambled, while loading, or during a rotation animation.
-    bool emit = effectsEnabled && sortedAssigned && !isScrambled && !rotating;
+    // Effects play only on a face that is currently in the correct sorted
+    // order. A scrambled face is silent; the moment it clicks back into place
+    // (e.g. you undo a move) the effects return automatically.
+    bool faceSorted = isFaceSorted(activeFace);
+    bool emit = effectsEnabled && sortedAssigned && !rotating && faceSorted;
     if (emit) {
-        if (activeFace != lastActiveFace) {
+        // Burst when the active face changes, or when it just snapped back
+        // into the correct order after having been scrambled.
+        if (activeFace != lastActiveFace || !lastFaceSorted) {
             emitFaceBurst(activeFace, 22);
-            lastActiveFace = activeFace;
         }
+        lastActiveFace = activeFace;
 
         // Drift particles spawn at a random point along the active face's
         // perimeter, slightly in front of the face — so they trail "around"
@@ -135,6 +181,12 @@ void MagicCube::update() {
         // Reset the change tracker so when sorting comes back we don't burst
         // for whatever face the camera happens to be looking at.
         lastActiveFace = activeFace;
+    }
+    lastFaceSorted = faceSorted;
+
+    // Advance only the 3 videos shown in immersive mode.
+    if (insideMode) {
+        for (int i : videoOrder) videos[i].update();
     }
 }
 
@@ -180,13 +232,21 @@ void MagicCube::processOneLoadingStep() {
 }
 
 void MagicCube::draw() {
+    // Immersive mode: hide the whole cube and just show the video triptych on a
+    // flat, cube-coloured world (the background is set by ofApp) so it really
+    // feels like being inside the cube rather than looking at one of its faces.
+    if (insideMode) {
+        drawInsideVideos();
+        return;
+    }
+
     glm::mat4 sliceR = rotating ? sliceMatrix(rotAxis, rotCurrentAngle) : glm::mat4(1.f);
     for (auto& c : cubies) {
         bool inSlice = rotating && isInSlice(c.logicalPos, rotAxis, rotSlice);
         c.draw(cubieSize, inSlice ? sliceR : glm::mat4(1.f));
     }
 
-    bool showStaticEffects = effectsEnabled && sortedAssigned && !isScrambled;
+    bool showStaticEffects = effectsEnabled && sortedAssigned && isFaceSorted(activeFace);
     if (showStaticEffects) {
         drawActiveFaceSortPath();
         drawActiveFaceGlow();
@@ -378,6 +438,30 @@ float MagicCube::orbDistance(const FeatureVector& a, const FeatureVector& b) con
     return total / nA;
 }
 
+namespace {
+// A cubie is "un-rotated" when its accumulated orientation is (near) identity.
+bool isIdentityOrient(const glm::mat4& m) {
+    const glm::mat4 I(1.f);
+    for (int c = 0; c < 4; ++c)
+        for (int r = 0; r < 4; ++r)
+            if (std::fabs(m[c][r] - I[c][r]) > 1e-3f) return false;
+    return true;
+}
+} // namespace
+
+bool MagicCube::isFaceSorted(FaceType f) {
+    // Face f is correctly ordered when each of its 9 cells is occupied by the
+    // cubie that belongs there (homePos == that cell) and is not rotated.
+    for (int cell = 0; cell < 9; cell++) {
+        glm::ivec3 pos = cellToCubiePos(f, cell % 3, cell / 3);
+        Cubie* c = findCubie(pos);
+        if (!c) return false;
+        if (c->homePos != pos) return false;
+        if (!isIdentityOrient(c->orientation)) return false;
+    }
+    return true;
+}
+
 FaceType MagicCube::getActiveFace(const glm::quat& cubeRotation) const {
     // Each face's outward normal in cube-local coords (Y is down in OF default).
     static const glm::vec3 baseNormals[FACE_COUNT] = {
@@ -555,4 +639,121 @@ MediaFrame* MagicCube::getPhotoOnActiveFace(int col, int row) {
         return c->photos[activeFace];
     }
     return nullptr;
+}
+
+// ---- Immersive video mode ---------------------------------------------------
+
+void MagicCube::setInsideMode(bool on) {
+    insideMode = on;
+    if (on) {
+        // Keep only the 3 most energetic videos, ordered most -> least energetic.
+        std::vector<int> idx(videos.size());
+        std::iota(idx.begin(), idx.end(), 0);
+        std::sort(idx.begin(), idx.end(), [&](int a, int b) {
+            return videos[a].features.motionEnergy > videos[b].features.motionEnergy;
+        });
+        if ((int)idx.size() > 3) idx.resize(3);
+        videoOrder = idx;
+        videoCenter = 0;                       // most energetic starts centred
+        for (auto& v : videos) v.pause();
+        for (int i : videoOrder) videos[i].play();
+    } else {
+        for (auto& v : videos) v.pause();
+    }
+}
+
+void MagicCube::cycleVideo() {
+    if (!insideMode || videoOrder.empty()) return;
+    // Next video becomes the centre; the current centre slides to the side.
+    videoCenter = (videoCenter + 1) % (int)videoOrder.size();
+}
+
+FaceType MagicCube::oppositeFace(FaceType f) {
+    switch (f) {
+        case FACE_FRONT:  return FACE_BACK;
+        case FACE_BACK:   return FACE_FRONT;
+        case FACE_LEFT:   return FACE_RIGHT;
+        case FACE_RIGHT:  return FACE_LEFT;
+        case FACE_TOP:    return FACE_BOTTOM;
+        case FACE_BOTTOM: return FACE_TOP;
+        default:          return FACE_BACK;
+    }
+}
+
+// Videos grouped by motion energy: calm clips first, energetic clips last.
+std::vector<int> MagicCube::videosSortedByMotion() const {
+    std::vector<int> idx(videos.size());
+    std::iota(idx.begin(), idx.end(), 0);
+    std::sort(idx.begin(), idx.end(), [&](int a, int b) {
+        return videos[a].features.motionEnergy < videos[b].features.motionEnergy;
+    });
+    return idx;
+}
+
+// Draw the videos on the interior back wall, in a row sorted by motion energy.
+// Each tile pulses with its rhythm; its frame colour goes from calm (cyan) to
+// energetic (magenta) with motion energy.
+void MagicCube::drawInsideVideos() {
+    int nv = (int)videoOrder.size();
+    if (nv == 0) return;
+
+    int c       = videoCenter % nv;
+    int centerV = videoOrder[c];
+    int leftV   = videoOrder[(c + nv - 1) % nv];
+    int rightV  = videoOrder[(c + 1) % nv];
+
+    // Triptych laid out in the camera-facing face frame (so it always faces us).
+    ofPushStyle();
+    ofPushMatrix();
+    ofMultMatrix(faceLocalTransform(activeFace, cubeSize));
+    ofDisableDepthTest(); // centre panel always reads on top of the side ones
+
+    float baseH  = cubeSize * 0.72f;
+    float spread = cubeSize * 0.55f;
+    float angle  = 50.f;
+
+    // Side panels first (dimmer); centre (active) last so it sits on top.
+    if (nv >= 2) drawVideoPanel(leftV,  -spread, +cubeSize * 0.05f, +angle, baseH * 0.9f, 150);
+    if (nv >= 3) drawVideoPanel(rightV, +spread, +cubeSize * 0.05f, -angle, baseH * 0.9f, 150);
+    drawVideoPanel(centerV, 0.f, -cubeSize * 0.18f, 0.f, baseH, 255);
+
+    ofEnableDepthTest();
+    ofPopMatrix();
+    ofPopStyle();
+}
+
+void MagicCube::drawVideoPanel(int videoIndex, float x, float z, float angleY,
+                               float height, int brightness) {
+    MediaFrame& v = videos[videoIndex];
+    const FeatureVector& f = v.features;
+
+    // Rhythm gives the panel a gentle pulse.
+    float rhythm = ofClamp(f.videoRhythm * 16.f, 0.f, 1.f);
+    float pulse  = 1.f + 0.06f * rhythm * std::sin(ofGetElapsedTimef() * 3.f);
+
+    // Speed (motion energy) -> outline colour: green (slow) -> yellow -> red (fast).
+    float motion = ofClamp(f.motionEnergy * 12.f, 0.f, 1.f);
+    ofColor outline;
+    if (motion < 0.5f) outline.set((int)ofLerp(0, 255, motion / 0.5f), 255, 0);
+    else               outline.set(255, (int)ofLerp(255, 0, (motion - 0.5f) / 0.5f), 0);
+
+    float ar = v.aspect(); if (ar <= 0.01f) ar = 0.56f;
+    float h  = height * pulse;
+    float w  = h * ar;
+
+    ofPushMatrix();
+    ofTranslate(x, 0.f, z);
+    ofRotateYDeg(angleY);
+
+    ofSetColor(brightness);
+    v.draw(-w * 0.5f, -h * 0.5f, w, h);
+
+    // Outline: colour by speed, thicker the faster it is.
+    ofNoFill();
+    ofSetLineWidth(3.f + 5.f * motion);
+    ofSetColor(outline, 235);
+    ofDrawRectangle(-w * 0.5f, -h * 0.5f, w, h);
+    ofFill();
+
+    ofPopMatrix();
 }

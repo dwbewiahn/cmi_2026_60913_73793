@@ -39,6 +39,7 @@ inline glm::mat4 faceLocalTransform(FaceType f, float size) {
 class Cubie {
 public:
     glm::ivec3 logicalPos = glm::ivec3(0);
+    glm::ivec3 homePos    = glm::ivec3(0); // solved position (set once at build)
     glm::mat4 orientation = glm::mat4(1.f);
     MediaFrame* photos[FACE_COUNT] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 

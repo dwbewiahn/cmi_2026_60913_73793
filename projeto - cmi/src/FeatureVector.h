@@ -15,5 +15,11 @@ struct FeatureVector {
     float textureVar  = 0.f; // 0..1 (RMS of local variance / 255)
     int orbNumKeypoints = 0;
     std::vector<uint8_t> orbDescriptors; // flat: orbNumKeypoints * 32 bytes
+
+    // ----- Video-only features --------------------------------------------
+    bool  isVideo      = false;
+    float motionEnergy = 0.f; // 0..1  mean frame-to-frame difference (how much movement)
+    float videoRhythm  = 0.f; // 0..1  variability of that motion over time (how bursty)
+
     bool valid = false;
 };

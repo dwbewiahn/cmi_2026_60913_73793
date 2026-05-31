@@ -26,7 +26,15 @@ struct FacePerceptionConfig {
 class MagicCube {
 public:
     std::vector<MediaFrame> media;
+    std::vector<MediaFrame> videos;   // clips shown inside the cube (immersive)
     std::vector<Cubie> cubies;
+
+    // Immersive "inside the cube" mode: the front face is hidden so the camera
+    // appears to be inside, and the 3 most energetic videos are shown as a
+    // triptych (active video centred, the other two angled at the sides).
+    bool insideMode = false;
+    int  videoCenter = 0;          // which of the 3 videos is centred (carousel)
+    std::vector<int> videoOrder;   // up to 3 video indices, most -> least energetic
 
     float cubeSize = 600.f;
     float cubieSize = 200.f;
@@ -58,10 +66,17 @@ public:
     float driftTimer = 0.f;
     bool effectsEnabled = true;
     bool isScrambled = false;     // true once any slice rotation has committed
+    bool lastFaceSorted = true;   // tracks active-face sort state across frames
 
     void setup(const std::string& photosDir);
+    void loadVideos(const std::string& videosDir); // load + extract video features
     void update();
     void draw();
+
+    // Immersive video mode.
+    void setInsideMode(bool on);
+    void cycleVideo();            // advance the carousel to the next video (key D)
+    int  getVideoCount() const { return (int)videos.size(); }
 
     int getMediaCount() const { return (int)media.size(); }
     float getLoadingProgress() const {
@@ -73,6 +88,11 @@ public:
 
     // Which face is most facing the camera, given current overall cube rotation.
     FaceType getActiveFace(const glm::quat& cubeRotation) const;
+
+    // True if face f currently shows its photos in the correct sorted order
+    // (its 9 cubies are back home with an un-rotated orientation). Used to
+    // re-enable the effects automatically once a face clicks back into place.
+    bool isFaceSorted(FaceType f);
 
     // Retorna a foto presente numa determinada célula (coluna/linha) da face ativa
     MediaFrame* getPhotoOnActiveFace(int col, int row);
@@ -104,4 +124,11 @@ private:
     bool isInSlice(const glm::ivec3& p, int axis, int slice) const;
     glm::mat4 sliceMatrix(int axis, float degrees) const;
     glm::ivec3 rotateInt(const glm::ivec3& p, int axis, float degrees) const;
+
+    // Immersive video helpers.
+    static FaceType oppositeFace(FaceType f);
+    std::vector<int> videosSortedByMotion() const; // indices, calm -> energetic
+    void drawInsideVideos();                        // triptych of the 3 videos
+    void drawVideoPanel(int videoIndex, float x, float z, float angleY,
+                        float height, int brightness);
 };
