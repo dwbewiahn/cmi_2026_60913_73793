@@ -45,7 +45,12 @@ public:
     bool faceDetectedNow = false;
     bool faceTrackingOn = true;
 
+    // Armazena a foto expandida (nullptr se nenhuma estiver aberta)
+    MediaFrame* selectedPhoto = nullptr; 
+
     void drawInspector();
-    void mouseScrolled(ofMouseEventArgs& mouse); // Captura o scroll do rato
+
+    // Captura o scroll do rato
+    void mouseScrolled(ofMouseEventArgs& mouse); 
 };
 

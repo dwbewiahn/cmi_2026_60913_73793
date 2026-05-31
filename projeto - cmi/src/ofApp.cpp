@@ -23,6 +23,10 @@ void ofApp::setup() {
 
 //--------------------------------------------------------------
 void ofApp::update() {
+
+    // SE HOUVER UMA FOTO EXPANDIDA, CONGELA O CUBO E O RASTREIO FACIAL
+    if (selectedPhoto != nullptr) return;
+
     grabber.update();
 
     static glm::quat targetRot = curRot;
@@ -149,7 +153,7 @@ void ofApp::draw() {
     ofEnableDepthTest();
     ofPushMatrix();
     ofTranslate(center);
-    ofScale(cameraZoom); // Aplica o fator de zoom
+    ofScale(cameraZoom); 
     ofMultMatrix(glm::mat4(curRot));
 
     cube.draw();
@@ -172,7 +176,7 @@ void ofApp::draw() {
     string statusFace = faceTrackingOn ? "ON" : "OFF";
     ofDrawBitmapString("T         : toggle face tracking [" + statusFace + "]", 20, 160);
 
-    // Coordenada Y alterada para 180 para corrigir o erro de sobreposição de texto
+  
     ofDrawBitmapString("Photos: " + ofToString(cube.getMediaCount()) +
         "   Particles: " + ofToString(cube.particles.activeCount()) +
         "   FPS: " + ofToString(ofGetFrameRate(), 1), 20, 180);
@@ -251,6 +255,46 @@ void ofApp::draw() {
         ofDrawRectangle(renderX, renderY, renderW, renderH);
         ofPopStyle();
     }
+
+    // --- DESENHO DA FOTO EXPANDIDA EM ECRÃ INTEIRO ---
+    if (selectedPhoto != nullptr && selectedPhoto->loaded && selectedPhoto->thumbnail.isAllocated()) {
+        ofPushStyle();
+        ofDisableDepthTest(); // Garante que renderiza à frente do cubo 3D
+
+        // Desenha um fundo escuro semi-transparente para focar a atenção na imagem
+        ofSetColor(0, 0, 0, 230);
+        ofDrawRectangle(0, 0, ofGetWidth(), ofGetHeight());
+
+        // Calcula a escala ideal para a imagem ocupar até 80% do menor eixo do ecrã
+        float maxScreenDim = std::min(ofGetWidth(), ofGetHeight()) * 0.8f;
+        float iw = selectedPhoto->thumbnail.getWidth();
+        float ih = selectedPhoto->thumbnail.getHeight();
+        float s = maxScreenDim / std::max(iw, ih);
+
+        float drawW = iw * s;
+        float drawH = ih * s;
+        float drawX = (ofGetWidth() - drawW) / 2.f;
+        float drawY = (ofGetHeight() - drawH) / 2.f;
+
+        // Desenha uma moldura branca fina à volta da imagem
+        ofNoFill();
+        ofSetColor(255);
+        ofSetLineWidth(2.f);
+        ofDrawRectangle(drawX - 2, drawY - 2, drawW + 4, drawH + 4);
+
+        // Desenha a imagem centralizada
+        ofFill();
+        ofSetColor(255);
+        selectedPhoto->thumbnail.draw(drawX, drawY, drawW, drawH);
+
+        // Desenha uma instrução simples de fecho na parte inferior
+        ofSetColor(200);
+        string closeTxt = "Click anywhere to close - [" + selectedPhoto->features.filename + "]";
+        ofDrawBitmapString(closeTxt, ofGetWidth() / 2.f - (closeTxt.length() * 4.f), drawY + drawH + 30);
+
+        ofPopStyle();
+    }
+
 }
 
 void ofApp::drawInspector() {
@@ -374,6 +418,52 @@ void ofApp::mouseDragged(int x, int y, int button) {
 
 void ofApp::mousePressed(int x, int y, int button) {
     lastMouse = glm::vec2(x, y);
+
+    
+    if (selectedPhoto != nullptr) {
+        selectedPhoto = nullptr;
+        return;
+    }
+
+    // Converte o clique do ecrã para o espaço local relativo ao centro do cubo
+    float centerBx = ofGetWidth() / 2.f;
+    float centerBy = ofGetHeight() / 2.f;
+    float localX = (x - centerBx) / cameraZoom;
+    float localY = (y - centerBy) / cameraZoom;
+
+    float halfCube = cube.cubeSize / 2.f;
+
+    // Verifica se o clique ocorreu dentro dos limites visuais do cubo
+    if (localX >= -halfCube && localX <= halfCube && localY >= -halfCube && localY <= halfCube) {
+
+        // Cria o ponto de clique 3D no plano frontal projetado para o utilizador
+        glm::vec3 worldClick(localX, localY, halfCube);
+
+        // Multiplica pelo inverso da rotação atual para neutralizar as rotações acumuladas
+        glm::vec3 localClick = glm::inverse(curRot) * worldClick;
+
+        // Lambda para converter a coordenada contínua para o índice lógico do bloco (-1, 0 ou 1)
+        auto getLogicalCoord = [](float val, float halfSize) {
+            float limit = halfSize / 3.f;
+            if (val < -limit) return -1;
+            if (val > limit) return 1;
+            return 0;
+            };
+
+        int cx = getLogicalCoord(localClick.x, halfCube);
+        int cy = getLogicalCoord(localClick.y, halfCube);
+        int cz = getLogicalCoord(localClick.z, halfCube);
+        glm::ivec3 targetCubiePos(cx, cy, cz);
+
+        // Identifica qual é a face orientada para o ecrã e procura o bloco correspondente
+        FaceType activeFace = cube.getActiveFace(curRot);
+        for (auto& c : cube.cubies) {
+            if (c.logicalPos == targetCubiePos) {
+                selectedPhoto = c.photos[activeFace];
+                break;
+            }
+        }
+    }
 }
 
 void ofApp::mouseReleased(int x, int y, int button) {}

@@ -51,7 +51,7 @@ public:
     std::string featuresXmlPath;
     bool sortedAssigned = false;
 
-    // Phase 4 — effects
+    // effects
     ParticleSystem particles;
     FaceType activeFace = FACE_FRONT;
     FaceType lastActiveFace = FACE_FRONT;
@@ -73,6 +73,9 @@ public:
 
     // Which face is most facing the camera, given current overall cube rotation.
     FaceType getActiveFace(const glm::quat& cubeRotation) const;
+
+    // Retorna a foto presente numa determinada célula (coluna/linha) da face ativa
+    MediaFrame* getPhotoOnActiveFace(int col, int row);
 
     static const char* getPerceptionLabel(Perception p);
     Perception getFacePerception(FaceType f) const;

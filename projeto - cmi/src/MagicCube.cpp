@@ -3,7 +3,7 @@
 #include <intrin.h>
 #pragma intrinsic(__popcnt)
 #include <algorithm>
-#include <numeric>7
+#include <numeric>
 
 namespace {
 // Each face is assigned a different perception. The user faces FRONT initially
@@ -98,7 +98,7 @@ void MagicCube::update() {
         }
     }
 
-    // ---- Phase 4 effects -----------------------------------------------------
+    // ---------------------------------------------------------
     particles.update(dt);  // always update so existing particles fade out
 
     // No emission while scrambled, while loading, or during a rotation animation.
@@ -246,7 +246,7 @@ glm::ivec3 MagicCube::rotateInt(const glm::ivec3& p, int axis, float degrees) co
     return r;
 }
 
-// ---- Phase 3: sort photos by perception and assign to faces -----------------
+// ---- sort photos by perception and assign to faces -----------------
 
 void MagicCube::assignPhotosBySorting() {
     if (media.empty()) return;
@@ -544,4 +544,15 @@ void MagicCube::drawActiveFaceSortPath() {
 
     ofPopMatrix();
     ofPopStyle();
+
+
+}
+// Pegar foto na célula (col, row) da face ativa. Retorna nullptr se a célula estiver vazia
+MediaFrame* MagicCube::getPhotoOnActiveFace(int col, int row) {
+    glm::ivec3 pos = cellToCubiePos(activeFace, col, row);
+    Cubie* c = findCubie(pos);
+    if (c) {
+        return c->photos[activeFace];
+    }
+    return nullptr;
 }
