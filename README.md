@@ -1,50 +1,52 @@
 # The Magic Cube
 
-The Magic Cube is a media artifact that reimagines the exploration and experience of visual content. It is a three-dimensional artifact where each of its six faces reveals photos and videos organized through a unique perceptual lens. The entire media collection is reorganized in real-time as the cube rotates.
+The Magic Cube is an interactive visual medium that reimagines how a personal collection of photos is explored. The entire collection is mapped onto a three-dimensional Rubik-style $3\times3\times3$ cube where each of the six faces reorganizes the photographs according to a different computer-vision perceptual principle.
 
-## 1. Core Concept: Six Faces, Six Realities
+## 1. Core Concept: Six Faces, Six Perceptions
 
-The cube transforms based on the user's perspective, with each combination of rotation representing a different perceptual organization:
+The photos are sorted automatically by their extracted features and assigned to the faces in ascending order (from the top-left to the bottom-right cell of each grid). 
 
-* **Light Face**: Organized by mean luminance, where images cascade from shadow to sunshine. Bright images are designed to float higher within the layout.
-* **Contrast Face**: Sorted by luminance variance, transitioning from soft gradients to sharp contrasts. High-variance media appears larger and more prominent.
-* **Hue Face**: Sorted by hue variance, grouping pictures by dominant colors.
-* **Detail Face**: Arranged by edge density, moving from simple surfaces to intricate details. Detailed images are grouped more tightly.
-* **Texture Face**: Grouped by texture similarity, from glass-like smoothness to rough grain.
-* **Energy Face**: Ordered by motion energy specifically for video content, ranging from still meditation to kinetic chaos. High-motion videos may pulse, ripple, or cause the face to tremble.
-* **Kinship Face**: Clustered by visual similarity using ORB keypoints to find photos of the same places or subjects.
+* **Light Face (Front)**: Sorted by mean luminance, creating a visual cascade from shadow to sunshine.
+* **Contrast Face (Left)**: Sorted by luminance variance, transitioning from soft gradients to sharp, dramatic contrasts.
+* **Hue Face (Right)**: Sorted by hue variance, grouping images from single-color compositions to multi-color, rainbow-like ones.
+* **Detail Face (Top)**: Arranged by edge density using a Canny filter, moving from simple, flat surfaces to intricate details.
+* **Texture Face (Bottom)**: Grouped by local roughness computed via RMS of local variance, tracking from glass-like smoothness to rough grain.
+* **Kinship Face (Back)**: Clustered by visual similarity using ORB keypoint binary descriptors matched via average minimum Hamming distance around the most "central" anchor photo.
 
-## 2. Interaction & Gestures 
-The system utilizes intuitive, touchless gestures detected via webcam or standard keyboard input (WASD)
+## 2. Controls & Interaction 
 
-* **Swipe Left/Right/Up/Down**: Rotates the cube to reveal different faces and reorganization schemes.
-* **Strong Shake**: Triggers a dramatic reorganization where media flies to new positions.
-* **Forward Reach**: Dives inside the cube to explore content from a new perspective.
-* **Face Tracking**: The cube subtly tilts to follow the user's position, enhancing depth perception.
+The system supports multi-modal interaction combining manual desktop inputs with automated computer vision navigation:
+
+* **Mouse Drag**: Rotates the whole cube structure. The rotation uses a quaternion-based system with inertia and damping to give the cube a physical, weighted feeling.
+* **Mouse Scroll**: Controls the global camera viewport zoom. The scale factor is restricted between $0.3\times$ and $3.0\times$ via clamping to prevent mesh clipping.
+* **Mouse Click (Photo Selection)**: Clicking directly on any photo on the active face locks the cube and expands the image into a high-resolution 2D full-screen preview with a dimmed background. It uses an inverse rotation matrix calculation (`glm::inverse(curRot)`) to reliably map the 2D cursor coordinates to the correct 3D cubie regardless of how many times the cube was rotated.
+* **Rubik Slice Rotations**: Keyboard commands trigger internal slice animations:
+  * *Arrow Keys*: Rotate the middle slices.
+  * *Q / E*: Rotate the top and bottom horizontal layers.
+  * *Z / X*: Rotate the left and right vertical columns.
+* **System Hotkeys**:
+  * **R**: Resets the cube layout and re-applies the perceptual sorting (solves the cube).
+  * **F**: Toggles the Phase 4 reactive graphics layer (particle bursts, outline glow, and sorting path lines).
+  * **T**: Toggles the face-tracking system on or off dynamically to save CPU cycles.
+  * **I** and **[ / ]**: Opens the Feature Inspector panel to debug scalar outputs and ORB keypoint metrics.
+
+### Face-Tracking Engine
+Navigates the cube faces hands-free via real-time webcam input ($320\times240$). Using an OpenCV Haar Cascade classifier, the system tracks the user's face position. To guarantee stability, it implements a *Discrete Trigger State Machine*: when an intentional head tilt breaks past a set threshold ($\pm18$\,px horizontal or $\pm22$\,px vertical), a smooth 90-degree camera orbit is executed using spherical linear interpolation (`glm::slerp`) with a 1.0-second cooldown. Input drift caused by lighting or off-center seating is countered by an *Adaptive Baseline Calibration* that continuously updates the user's neutral posture center over time.
 
 ## 3. Technical Architecture 
 
-The system is composed of four primary subsystems:
+The system relies on five cohesive structural layers:
 
-* **Feature Extractor**: Analyzes media to compute seven visual features, storing metadata in XML format.
-* **Cube Manager**: Manages 3D geometry, face layouts, rotation states, and animations[.
-* **Gesture Detector**: Processes webcam input for motion and gesture recognition.
-* **Immersion Renderer**: Handles dynamic lighting, fog, particle trails, and spatial audio.
+* **Feature Extraction (`FeatureExtractor`)**: Responsible for single-pass processing of raw images into normalized scalar and binary visual feature vectors using OpenCV.
+* **Metadata Storage (`FeatureStore`)**: Handles persisting and reading feature records via openFrameworks' XML serialization, acting as a local cache database to achieve near-instantaneous load times on subsequent runs.
+* **Cube Management (`MagicCube`)**: Coordinates the geometry configuration of the 27 cubies, monitors active face view orientation vectors, processes slice scrambling calculations, and orchestrates sorting triggers.
+* **Rendering & Particle Effects (`Cubie`, `ParticleSystem`)**: Draws individual 3D blocks with mapping coordinates, pulsing halos, index path routes, and manages the lifecycle of additive-blended particle fields.
+* **Application Framework (`ofApp`)**: Drives the main window execution loop, hardware capture streams, inverse matrix click arithmetic, full-screen overlay state switches, and the HUD layout.
 
 ### Technical Foundation 
-* **OpenCV**: Used for feature extraction (luminance, variance, edge detection, ORB).
-* **Processing / OpenFrameworks**: Utilized for 3D rendering and camera integration.
-* **XML**: Ensures consistent metadata storage across analysis and display.
-
-## 4. Class Structure.
-
-* `MagicCube`: Main controller for state and rotation.
-* `CubeFace`: Represents individual faces and organization rules.
-* `MediaFrame`: Base class for 3D-positioned media.
-* `FeatureVector`: Encapsulates all seven visual features.
-* `GestureDetector`: Processes webcam frames for user input.
-* `SimilarityEngine`: Computes distance metrics for the Kinship face.
-* `XMLMetadataStore`: Handles reading/writing of feature data.
+* **OpenCV**: Core analysis framework used for spatial and descriptor feature metrics alongside Haar Cascade face tracking.
+* **openFrameworks**: Handles OpenGL 3D graphics rendering, asset loading pipelines, windowing, and window events.
+* **ofXml**: Structured XML system handling local cache parsing.
 
 ## Authors
 * Nasha Bagasse (60913)
